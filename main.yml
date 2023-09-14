@@ -1,0 +1,19 @@
+---
+
+- name: Create raid0
+  hosts: testservers
+  become: True
+  vars:
+    - name: 'md0'
+      devices:
+        - '/dev/sdb'
+        - '/dev/sdc'
+      filesystem: 'ext4'
+      level: '0'
+      mountpoint: '/mnt/md0'
+      state: 'present'
+  roles:
+    - role: ahharu.mdadm
+  tasks:
+
+...
