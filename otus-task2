@@ -1,0 +1,287 @@
+1. Добавить в Vagrantfile еще дисков.
+На гипервизоре добавил дополнительные три диска объёмом 1G каждый. В моё случае в системе они определились как /dev/sdb, /dev/sdc и /dev/sdd.
+
+
+2. Собрать R0/R5/R10 на выбор.
+Будем собирать raid5. Для сборки используем утилиту mdadm.
+
+Команда: 
+root@otus:~# mdadm --create /dev/md0 -l 5 -n 3 /dev/sd{b,c,d}
+
+Вывод команды:
+mdadm: Defaulting to version 1.2 metadata
+mdadm: array /dev/md0 started.
+
+Этой коммандой создаётся програмный рейд массив /dev/md0 уровня 5 из трёх дисков /dev/sdb, /dev/sdc и /dev/sdd. Для проверки выполняем следующую команду.
+
+Команда: 
+root@otus:~# mdadm -D /dev/md0
+
+Вывод команды: 
+/dev/md0:
+           Version : 1.2
+     Creation Time : Tue Sep 19 16:31:23 2023
+        Raid Level : raid5
+        Array Size : 2093056 (2044.00 MiB 2143.29 MB)
+     Used Dev Size : 1046528 (1022.00 MiB 1071.64 MB)
+      Raid Devices : 3
+     Total Devices : 3
+       Persistence : Superblock is persistent
+
+       Update Time : Tue Sep 19 16:31:30 2023
+             State : clean 
+    Active Devices : 3
+   Working Devices : 3
+    Failed Devices : 0
+     Spare Devices : 0
+
+            Layout : left-symmetric
+        Chunk Size : 512K
+
+Consistency Policy : resync
+
+              Name : otus:0  (local to host otus)
+              UUID : 420ae7c9:b77ef8f2:33ea56c2:5f17a737
+            Events : 18
+
+    Number   Major   Minor   RaidDevice State
+       0       8       16        0      active sync   /dev/sdb
+       1       8       32        1      active sync   /dev/sdc
+       3       8       48        2      active sync   /dev/sdd
+
+Эта команда выдаст подробную информацию о массиве.
+
+
+3. Прописать собранный рейд в конф, чтобы рейд собирался при загрузке.
+Для выполнения этого пункта нам нужно заполнить файл mdadm.conf. Его можно найти по пути /etc/mdadm/mdadm.conf. Заполняем файл с помощью следующих команд
+
+root@otus:~# echo "DEVICE partitions" > /etc/mdadm/mdadm.conf
+root@otus:~# mdadm --detail --scan --verbose | awk '/ARRAY/ {print}' >> /etc/mdadm/mdadm.conf
+
+В моём случае файл mdadm.conf имеет следующее содержимое:
+
+DEVICE partitions
+ARRAY /dev/md0 level=raid5 num-devices=3 metadata=1.2 name=otus:0 UUID=420ae7c9:b77ef8f2:33ea56c2:5f17a737
+
+
+4. Сломать/починить raid.
+Сломаем raid путём эмуляции выхода из строя диска /dev/sdb.
+
+Команда:
+root@otus:~# mdadm /dev/md0 --fail /dev/sdb
+
+Вывод команды:
+mdadm: set /dev/sdb faulty in /dev/md0
+
+После этого смотрим подробную информацию о нашем raid.
+
+Команда:
+root@otus:~# mdadm -D /dev/md0 
+
+Вывод команды:
+/dev/md0:
+           Version : 1.2
+     Creation Time : Tue Sep 19 16:31:23 2023
+        Raid Level : raid5
+        Array Size : 2093056 (2044.00 MiB 2143.29 MB)
+     Used Dev Size : 1046528 (1022.00 MiB 1071.64 MB)
+      Raid Devices : 3
+     Total Devices : 3
+       Persistence : Superblock is persistent
+
+       Update Time : Tue Sep 19 16:36:49 2023
+             State : clean, degraded 
+    Active Devices : 2
+   Working Devices : 2
+    Failed Devices : 1
+     Spare Devices : 0
+
+            Layout : left-symmetric
+        Chunk Size : 512K
+
+Consistency Policy : resync
+
+              Name : otus:0  (local to host otus)
+              UUID : 420ae7c9:b77ef8f2:33ea56c2:5f17a737
+            Events : 20
+
+    Number   Major   Minor   RaidDevice State
+       -       0        0        0      removed
+       1       8       32        1      active sync   /dev/sdc
+       3       8       48        2      active sync   /dev/sdd
+
+       0       8       16        -      faulty   /dev/sdb
+
+Видим, что статус raid перешёл в degraded.
+
+Извлекаем сбойный диск.
+
+Команда:
+root@otus:~# mdadm /dev/md0 --remove /dev/sdb
+
+Вывод команды:
+mdadm: hot removed /dev/sdb from /dev/md0
+
+Чиним. Вставляем новый диск (/dev/sdb) 
+
+Команда:
+root@otus:~# mdadm /dev/md0 --add /dev/sdb
+
+Вывод команды:
+mdadm: added /dev/sdb
+
+Проверяем наш raid.
+
+Команда:
+root@otus:~# mdadm -D /dev/md0
+
+Вывод команды:
+dev/md0:
+           Version : 1.2
+     Creation Time : Tue Sep 19 16:31:23 2023
+        Raid Level : raid5
+        Array Size : 2093056 (2044.00 MiB 2143.29 MB)
+     Used Dev Size : 1046528 (1022.00 MiB 1071.64 MB)
+      Raid Devices : 3
+     Total Devices : 3
+       Persistence : Superblock is persistent
+
+       Update Time : Tue Sep 19 16:44:50 2023
+             State : clean, degraded, recovering 
+    Active Devices : 2
+   Working Devices : 3
+    Failed Devices : 0
+     Spare Devices : 1
+
+            Layout : left-symmetric
+        Chunk Size : 512K
+
+Consistency Policy : resync
+
+    Rebuild Status : 55% complete
+
+              Name : otus:0  (local to host otus)
+              UUID : 420ae7c9:b77ef8f2:33ea56c2:5f17a737
+            Events : 31
+
+    Number   Major   Minor   RaidDevice State
+       4       8       16        0      spare rebuilding   /dev/sdb
+       1       8       32        1      active sync   /dev/sdc
+       3       8       48        2      active sync   /dev/sdd
+
+Видим, что raid перешёл в статус восстановления.
+
+Через некоторое время raid полностью восстановился.
+
+/dev/md0:
+           Version : 1.2
+     Creation Time : Tue Sep 19 16:31:23 2023
+        Raid Level : raid5
+        Array Size : 2093056 (2044.00 MiB 2143.29 MB)
+     Used Dev Size : 1046528 (1022.00 MiB 1071.64 MB)
+      Raid Devices : 3
+     Total Devices : 3
+       Persistence : Superblock is persistent
+
+       Update Time : Tue Sep 19 16:44:52 2023
+             State : clean 
+    Active Devices : 3
+   Working Devices : 3
+    Failed Devices : 0
+     Spare Devices : 0
+
+            Layout : left-symmetric
+        Chunk Size : 512K
+
+Consistency Policy : resync
+
+              Name : otus:0  (local to host otus)
+              UUID : 420ae7c9:b77ef8f2:33ea56c2:5f17a737
+            Events : 40
+
+    Number   Major   Minor   RaidDevice State
+       4       8       16        0      active sync   /dev/sdb
+       1       8       32        1      active sync   /dev/sdc
+       3       8       48        2      active sync   /dev/sdd
+
+5. Создать GPT раздел и 5 партиций.
+Используем утилиту fdisk.
+
+root@otus:~# fdisk /dev/md0 
+
+Welcome to fdisk (util-linux 2.37.2).
+Changes will remain in memory only, until you decide to write them.
+Be careful before using the write command.
+
+Device does not contain a recognized partition table.
+Created a new DOS disklabel with disk identifier 0x73481e51.
+
+Command (m for help): g
+Created a new GPT disklabel (GUID: 9DC7BC62-01A1-9049-BC5B-FD7AFA9F63B8).
+
+Command (m for help): n
+Partition number (1-128, default 1): 
+First sector (2048-4186078, default 2048): 
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (2048-4186078, default 4186078): +400M
+
+Created a new partition 1 of type 'Linux filesystem' and of size 400 MiB.
+
+Command (m for help): n
+Partition number (2-128, default 2): 
+First sector (821248-4186078, default 821248): 
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (821248-4186078, default 4186078): +400M
+
+Created a new partition 2 of type 'Linux filesystem' and of size 400 MiB.
+
+Command (m for help): n
+Partition number (3-128, default 3): 
+First sector (1640448-4186078, default 1640448): 
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (1640448-4186078, default 4186078): +400M
+
+Created a new partition 3 of type 'Linux filesystem' and of size 400 MiB.
+
+Command (m for help): n
+Partition number (4-128, default 4): 
+First sector (2459648-4186078, default 2459648): 
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (2459648-4186078, default 4186078): +400M
+
+Created a new partition 4 of type 'Linux filesystem' and of size 400 MiB.
+
+Command (m for help): n
+Partition number (5-128, default 5): 
+First sector (3278848-4186078, default 3278848): 
+Last sector, +/-sectors or +/-size{K,M,G,T,P} (3278848-4186078, default 4186078): 
+
+Created a new partition 5 of type 'Linux filesystem' and of size 443 MiB.
+
+Command (m for help): w
+The partition table has been altered.
+Calling ioctl() to re-read partition table.
+Syncing disks.
+
+Создали таблицу разделов GPT и 5 разделов.
+
+Выведем наши разделы.
+
+root@otus:~# cat /proc/partitions 
+major minor  #blocks  name
+
+  11        0    1048575 sr0
+   8        0   10485760 sda
+   8        1       1024 sda1
+   8        2   10482688 sda2
+   8       16    1048576 sdb
+   8       32    1048576 sdc
+   8       48    1048576 sdd
+   9        0    2093056 md0
+ 259        0     409600 md0p1
+ 259        1     409600 md0p2
+ 259        2     409600 md0p3
+ 259        3     409600 md0p4
+ 259        4     453615 md0p5
+
+
+
+
+
+
